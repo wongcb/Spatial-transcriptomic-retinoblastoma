@@ -1,0 +1,354 @@
+import scvelo as scv
+import scanpy as sc
+import cellrank as cr
+import numpy as np
+import pandas as pd
+import anndata as ad
+import matplotlib
+import seaborn as sns
+matplotlib.use('Agg')
+import scanpy as sc
+import anndata
+from scipy import io
+from scipy.sparse import coo_matrix, csr_matrix
+import numpy as np
+import os
+import pandas as pd
+import matplotlib
+matplotlib.use('TkAgg')
+import matplotlib.ticker as mticker
+import matplotlib.pyplot as plt
+from matplotlib import ticker
+
+scv.settings.verbosity = 3
+scv.settings.set_figure_params('scvelo', facecolor='white', dpi=100, frameon=False)
+cr.settings.verbosity = 2
+
+adata = sc.read_h5ad('combined_data.h5ad')
+
+
+exclude_clusters = [7,8]
+mask = ~adata.obs["seurat_clusters"].isin(exclude_clusters)
+adata_filtered = adata[mask].copy()
+
+scv.pp.filter_and_normalize(adata_filtered)
+scv.pp.moments(adata_filtered)
+
+scv.pl.proportions(adata_filtered, groupby='seurat_clusters', save='_proportion.pdf')
+sc.pl.umap(adata_filtered, color='seurat_clusters', frameon=False, save='_cluster.pdf')
+
+scv.pp.filter_and_normalize(adata_filtered)
+scv.pp.moments(adata_filtered)
+scv.tl.velocity(adata_filtered, mode='stochastic')
+scv.tl.velocity_graph(adata_filtered)
+
+scv.pl.velocity_embedding(adata_filtered, basis='umap', frameon=False, save='embedding.pdf')
+scv.pl.velocity_embedding_grid(adata_filtered, basis='umap', color='seurat_clusters', save='embedding_grid.pdf', title='', scale=0.25)
+scv.pl.velocity_embedding_stream(adata_filtered, basis='umap', color='seurat_clusters', save='embedding_stream.pdf', title='')
+
+scv.tl.velocity_confidence(adata_filtered)
+keys = 'velocity_length', 'velocity_confidence'
+scv.pl.scatter(adaadata_filteredta, c=keys, cmap='coolwarm', perc=[5, 95], save='confidence.pdf')
+df = adata_filtered.obs.groupby('seurat_clusters')[keys].mean().T
+df.style.background_gradient(cmap='coolwarm', axis=1, save='confidence_table.pdf')
+
+scv.pl.velocity_graph(adata_filtered, threshold=.1, color='seurat_clusters', save='transition.pdf')
+scv.tl.velocity_pseudotime(adata_filtered)
+scv.pl.scatter(adata_filtered, color='velocity_pseudotime', cmap='gnuplot', save='velocity_pseudotime.pdf')
+
+
+scv.tl.recover_dynamics(adata_filtered, n_jobs=14)
+scv.tl.velocity(adata_filtered, mode="dynamical")
+scv.tl.velocity_graph(adata_filtered)
+
+##figure 3D
+scv.pl.velocity_embedding_stream(adata_filtered, basis='umap', color='seurat_clusters', save='dynamical_embedding_stream.pdf', title='')
+
+scv.tl.score_genes_cell_cycle(adata_filtered)
+scv.pl.scatter(adata_filtered, color_gradients=['S_score', 'G2M_score'], smooth=True, perc=[5, 95], save='cell_cycle_score.pdf', title='')
+
+scv.tl.velocity_pseudotime(adata_filtered)
+scv.pl.scatter(adata_filtered, color='velocity_pseudotime', cmap='gnuplot', save='dynamical_velocity_pseudotime.pdf')
+
+scv.tl.latent_time(adata_filtered)
+scv.pl.scatter(adata_filtered, color='latent_time', color_map='gnuplot', save='dynamical_velocity_latenttime.pdf')
+
+#PAGA
+adata_filtered.uns['neighbors']['distances'] = adata_filtered.obsp['distances']
+adata_filtered.uns['neighbors']['connectivities'] = adata_filtered.obsp['connectivities']
+scv.tl.paga(adata_filtered, groups='seurat_clusters')
+df = scv.get_df(adata_filtered, 'paga/transitions_confidence', precision=2).T
+df.style.background_gradient(cmap='Blues').format('{:.2g}')
+scv.pl.paga(adata_filtered, basis='umap', size=50, alpha=.1, min_edge_width=2, node_size_scale=1.5)
+
+
+vk = cr.kernels.VelocityKernel(adata_filtered)
+
+#compute transition probabilities
+vk.compute_transition_matrix()
+
+#combine with gene expression similarity
+ck = cr.kernels.ConnectivityKernel(adata_filtered)
+ck.compute_transition_matrix()
+combined_kernel = 0.8 * vk + 0.2 * ck
+print(combined_kernel)
+
+#visualize the transition matrix
+vk.plot_projection(save='cr_transition_matrix.pdf', title='', color = 'seurat_clusters')
+
+vk.plot_random_walks(start_ixs={"seurat_clusters": "4"}, max_iter=200, seed=0, save='cr_random_5.pdf')
+vk.plot_random_walks(start_ixs={"seurat_clusters": "1"}, max_iter=200, seed=0, save='cr_random_2.pdf')
+
+adata
+vk
+sc.pl.embedding(adata_filtered, basis="umap", color="seurat_clusters")
+
+#initialize an estimator
+g2 = cr.estimators.GPCCA(vk)
+print(g2)
+g2.compute_schur()
+g2.plot_spectrum(real_only=True, save='supervised_estimator_selection.pdf')
+
+#use states = 4 as it is the most macrostates with a confidence over 0.95
+g2.compute_macrostates(n_states=4, cluster_key="seurat_clusters")
+g2.plot_macrostates(which="all", legend_loc="right", s=100, save='supervised_4_state.pdf', title='')
+g2.plot_macrostate_composition(key="seurat_clusters", figsize=(7, 4), save='supervised_distribution_state.pdf', title='')
+g2.plot_coarse_T(annotate=False, save='coarse_grained_transition_matrix_supervised.pdf', title='')
+
+
+#terminal state
+g2.predict_terminal_states()
+g2.plot_macrostates(which="terminal", legend_loc="right", s=100, save='cr_terminal.pdf', title='')
+g2.plot_macrostates(which="terminal", discrete=False, save='cr_terminal_noDiscrete.pdf', title='')
+
+#initial state
+g2.predict_initial_states(allow_overlap=True)
+g2.plot_macrostates(which="initial", legend_loc="right", s=100, save='cr_initial.pdf', title='')
+g2.plot_macrostates(which="initial", discrete=False, save='cr_initial_noDiscrete.pdf', title='')
+
+g2
+
+#set the initial and terminal states
+g2.set_terminal_states(states=["1"], allow_overlap=True)
+g2.set_initial_states(states=["4"], allow_overlap=True)
+
+#plot the confidence of initial and terminal states
+#figure 3F-G
+fig, axes = plt.subplots(1, 2, figsize=(10, 5)) 
+
+g2.plot_macrostates(
+    which="initial",
+    discrete=False,
+    title="Initial Macrostates",
+    ax=axes[0], 
+    show=False
+)
+
+g2.plot_macrostates(
+    which="terminal",
+    discrete=False,
+    title="Terminal Macrostates",
+    ax=axes[1],
+    show=False
+)
+
+plt.tight_layout()
+plt.show()
+
+
+# write macrostates to AnnData
+adata_filtered.obs["macrostates"] = g2.macrostates
+adata_filtered.uns["macrostates_colors"] = g2.macrostates_memberships.colors
+
+
+##estimate the fate probabilities
+#figure 3I
+g2.compute_fate_probabilities()
+g2.plot_fate_probabilities(same_plot=False, save='cr_1fate_probility.pdf', title='')
+
+
+#calculate the driver genes
+g2.compute_eigendecomposition()
+delta_df = g2.compute_lineage_drivers(lineages=["1"], cluster_key="seurat_clusters")
+delta_df.head(10)
+
+model = cr.models.GAM(adata_filtered)
+cr.pl.heatmap(adata_filtered, model=model lineages=["1"], cluster_key="seurat_clusters", show_fate_probabilities=True, time_key="velocity_pseudotime", genes=delta_df.head(40).index, figsize=(12, 10), show_all_genes=True, weight_threshold=(1e-3, 1e-3))
+
+scv.tl.latent_time(adata_filtered)
+scv.pl.scatter(adata_filtered, color='latent_time', color_map='gnuplot', size=80)
+#figure 3H
+cr.pl.heatmap(
+    adata_filtered,
+    model=model, 
+    lineages=["1"],
+    cluster_key="seurat_clusters",
+    show_fate_probabilities=True,
+    genes=delta_df.head(40).index,
+    time_key="velocity_pseudotime",
+    figsize=(12, 10),
+    show_all_genes=True,
+    weight_threshold=(1e-3, 1e-3), save='cr_fate1_driven_gene.pdf'
+)
+
+cr.pl.heatmap(
+    adata_filtered,
+    model=model, 
+    lineages=["1"],
+    cluster_key="seurat_clusters",
+    show_fate_probabilities=False,
+    genes=delta_df.head(40).index,
+    time_key="latent_time",
+    figsize=(12, 10),
+    show_all_genes=True,
+    weight_threshold=(1e-3, 1e-3)
+)
+
+
+#fate probability
+g.compute_fate_probabilities()
+
+g.plot_fate_probabilities(same_plot=False, save='cr_1fate_probility.pdf', title='', rescale_color=[0,1])
+
+g.plot_macrostates(which="terminal", discrete=False, title='', save='cr_terminal_confidence.pdf')
+g.plot_macrostates(which="initial", discrete=False, title='', save='cr_initial_confidence.pdf')
+
+#latent time
+scv.pl.scatter(adata_filtered, color='latent_time', color_map='gnuplot', size=80)
+
+#velocity pseudotime
+scv.pl.velocity_graph(adata_filtered, threshold=.1, color='seurat_clusters', save='transition.pdf')
+scv.tl.velocity_pseudotime(adata_filtered)
+scv.pl.scatter(adata_filtered, color='velocity_pseudotime', cmap='gnuplot', save='velocity_pseudotime.pdf')
+
+
+#driven gene
+model = cr.models.GAM(adata_filtered)
+g2.compute_eigendecomposition()
+RB_df = g2.compute_lineage_drivers(lineages=["1"], cluster_key="seurat_clusters")
+RB_df.head(10)
+cr.pl.heatmap(
+    adata_filtered,
+    model=model, 
+    lineages=["1"],
+    show_fate_probabilities=False,
+    genes=RB_df.head(40).index,
+    time_key="latent_time",
+    figsize=(12, 10),
+    show_all_genes=True,
+    weight_threshold=(1e-3, 1e-3)
+)
+plt.subplots_adjust(bottom=0.15)
+plt.savefig("figure3H.pdf", format="pdf")
+plt.show()
+
+#gene trend
+cr.pl.cluster_trends(
+    adata_filtered,
+    model=model,  # use the model from before
+    lineage="1",
+    genes=adata_filtered.var_names,
+    time_key="latent_time",
+    weight_threshold=(1e-3, 1e-3),
+    n_jobs=8,
+    random_state=0,
+    clustering_kwargs={"resolution": 0.2, "random_state": 0},
+    neighbors_kwargs={"random_state": 0},
+)
+
+gdata = adata_filtered.uns["lineage_1_trend"].copy()
+gdata
+
+cols = ["means", "dispersions"]
+gdata.obs = gdata.obs.merge(
+    right=adata_filtered.var[cols], how="left", left_index=True, right_index=True
+)
+gdata
+
+sc.tl.umap(gdata, random_state=0)
+sc.pl.embedding(gdata, basis="umap", color=["seurat_clusters", "means"], vmax="p95")
+
+terminal_genes = (
+    gdata[gdata.obs["clusters"] == "5"]
+    .obs.sort_values("means", ascending=False)
+    .head(8)
+    .index
+)
+
+cr.pl.gene_trends(
+    adata_filtered,
+    model=model,
+    lineages="Beta",
+    cell_color="clusters",
+    data_key="magic_imputed_data",
+    genes=["Pax4"] + list(mid_peak_genes),
+    same_plot=True,
+    ncols=3,
+    time_key="palantir_pseudotime",
+    hide_cells=False,
+    weight_threshold=(1e-3, 1e-3),
+)
+
+#for the spatial plot of latent time
+#got the csv file of spatial coordinates from R Seurat object
+RB4_coords = pd.read_csv("RB4_location.csv", index_col=0)
+RB2A_coords = pd.read_csv("RB2Asp_location_rotated.csv", index_col=0)
+
+bdata = adata_filtered.copy()
+bdata
+
+slice4 = bdata[bdata.obs_names.str.contains("_4")].copy()
+slice5 = bdata[bdata.obs_names.str.contains("_5")].copy()
+
+slice4.obs["spatial_X"] = RB4_coords.loc[slice4.obs_names, "x"]
+slice4.obs["spatial_Y"] = RB4_coords.loc[slice4.obs_names, "y"]
+
+slice5.obs["spatial_X"] = RB2A_coords.loc[slice5.obs_names, "x"]
+slice5.obs["spatial_Y"] = RB2A_coords.loc[slice5.obs_names, "y"]
+
+scv.pl.scatter(slice4, x='spatial_X', y='spatial_Y', color="latent_time", smooth=True, perc=[5, 95], title='', alpha=1, size=450)
+scv.pl.scatter(slice5, x='spatial_X', y='spatial_Y', color="latent_time", smooth=True, perc=[5, 95], title='', alpha=1, size=450)
+
+#summarize the latent time score -- can go to supplementary
+df = adata.obs[['seurat_clusters', 'latent_time']].copy()
+df = df.dropna() 
+
+summary = df.groupby('seurat_clusters')['latent_time'].agg(['mean', 'std', 'count']).reset_index()
+print(summary.sort_values('mean'))
+
+#figure 3E
+plt.figure(figsize=(10, 6))
+sns.violinplot(data=df, x='seurat_clusters', y='latent_time', order=sorted(df['seurat_clusters'].unique()))
+sns.stripplot(data=df, x='seurat_clusters', y='latent_time', color='black', alpha=0.3, size=1, jitter=True)
+plt.title("Latent time distribution by cluster")
+plt.ylabel("Latent time")
+plt.xlabel("Cluster")
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+###save the data
+adata_filtered.write('RB_scVelo_cellrank_v4.h5ad')
+slice4.write('RB4_coord.h5ad')
+slice5.write('RB2A_coord.h5ad')
+
+#for the spatial plot of cell cycle score
+#got the csv file of spatial coordinates from R Seurat object
+RB4_coords = pd.read_csv("RB4_location.csv", index_col=0)
+RB2A_coords = pd.read_csv("RB2Asp_location_rotated.csv", index_col=0)
+
+#figure 3B
+slice4_data = adata[adata.obs.index.str.contains('_4')]
+slice4_data.obs["spatial_X"] = RB4_coords["x"].values
+slice4_data.obs["spatial_Y"] = RB4_coords["y"].values
+columns_to_keep = ['spatial_X', 'spatial_Y', 'S_score', 'G2M_score']
+slice4_data.obs = slice4_data.obs[columns_to_keep]
+scv.pl.scatter(slice4_data, x='spatial_X', y='spatial_y', color_gradients=['S_score', 'G2M_score'], smooth=True, perc=[5, 95], title='')
+
+
+slice5_data = bdata[bdata.obs.index.str.contains('_5')]
+slice5_data.obs["spatial_X"] = RB2A_coords["x"].values
+slice5_data.obs["spatial_Y"] = RB2A_coords["y"].values
+columns_to_keep = ['spatial_X', 'spatial_Y', 'S_score', 'G2M_score']
+slice5_data.obs = slice5_data.obs[columns_to_keep]
+scv.pl.scatter(slice5_data, x='spatial_X', y='spatial_Y', color_gradients=['S_score', 'G2M_score'], smooth=True, perc=[5, 95], title='', alpha=1)
